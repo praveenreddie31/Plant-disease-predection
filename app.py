@@ -4,7 +4,7 @@ import timm
 from torchvision import transforms
 from PIL import Image
 from gtts import gTTS, gTTSError
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 import os
 import base64
 import tempfile
@@ -253,14 +253,15 @@ Keep it under 100 words and farmer-friendly."""
 # ----------------------------
 @st.cache_data
 def translate_text(text, target_lang):
-    """Translate text with caching"""
+    """Translate text using deep_translator GoogleTranslator with caching"""
     if not text or target_lang == 'en':
         return text
     
     try:
-        translator = Translator()
-        translated = translator.translate(text, dest=target_lang)
-        return translated.text
+        # Use GoogleTranslator from deep_translator
+        translator = GoogleTranslator(source='auto', target=target_lang)
+        translated = translator.translate(text)
+        return translated
     except Exception as e:
         st.warning(f"Translation failed: {str(e)}")
         return text
@@ -333,14 +334,15 @@ def main():
         
         st.markdown("---")
         
-        # Features
+        # Enhanced features with deep_translator
         st.header("✨ Features")
         st.markdown("""
         - 🤖 **AI-Powered** Swin Transformer
-        - 🌐 **Multilingual** Support
+        - 🌐 **Multilingual** Support (deep_translator)
         - 🔊 **Voice** Summaries
         - 📱 **Mobile** Friendly
         - ⚡ **Real-time** Analysis
+        - ☁️ **Cloud** Optimized
         """)
         
         st.markdown("---")
@@ -487,7 +489,7 @@ def main():
     # Footer
     st.markdown("---")
     st.markdown(
-        '<p style="text-align: center; color: #666;">Built with ❤️ using Swin Transformer + Gemini AI + Google TTS</p>',
+        '<p style="text-align: center; color: #666;">Built with ❤️ using Swin Transformer + Gemini AI + Google TTS + deep_translator</p>',
         unsafe_allow_html=True
     )
 
