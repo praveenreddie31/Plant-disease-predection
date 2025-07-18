@@ -12,6 +12,11 @@ import gdown
 import requests
 import json
 import time
+import speech_recognition as sr
+import pyaudio
+import wave
+import numpy as np
+from io import BytesIO
 
 # ----------------------------
 # Page Configuration
@@ -85,6 +90,14 @@ st.markdown("""
         text-align: center;
     }
     
+    .speech-section {
+        background: #e8f4fd;
+        border-radius: 15px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        border: 2px solid #3498db;
+    }
+    
     .loading-spinner {
         display: flex;
         justify-content: center;
@@ -132,13 +145,36 @@ st.markdown("""
         border: 2px solid #fff;
     }
     
-    .feature-box {
-        background: white;
-        border-radius: 10px;
-        padding: 1.5rem;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        text-align: center;
-        margin: 1rem 0;
+    .conversation-bubble {
+        background: #f1f3f4;
+        border-radius: 15px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-left: 4px solid #3498db;
+    }
+    
+    .user-bubble {
+        background: #e3f2fd;
+        border-left: 4px solid #2196f3;
+    }
+    
+    .ai-bubble {
+        background: #f3e5f5;
+        border-left: 4px solid #9c27b0;
+    }
+    
+    .recording-indicator {
+        background: #ff4444;
+        color: white;
+        padding: 0.5rem 1rem;
+        border-radius: 25px;
+        animation: pulse 1s infinite;
+    }
+    
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -215,38 +251,88 @@ def predict(model, image):
 # ----------------------------
 GEMINI_API_KEY = "AIzaSyBR2iai4tQVwTYBKmhOSCUUlhK1ulkHyyQ"
 
+# Initialize speech recognizer
+r = sr.Recognizer()
+
 def get_gemini_summary(disease_name):
-    """Get concise disease summary from Gemini API"""
-    if "healthy" in disease_name.lower():
-        plant_type = disease_name.split('___')[0].replace('_', ' ').title()
-        return f"✅ Great news! Your {plant_type} leaf appears healthy. No disease detected. Continue with regular care and monitoring."
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
-    
-    # Enhanced prompt for concise summary
-    prompt = f"""Provide a brief, practical summary about {disease_name} plant disease in exactly 3 sentences:
-1. What it is and main symptoms
-2. Primary causes
-3. Key treatment/prevention methods
-Keep it under 100 words and farmer-friendly."""
-    
-    data = {
-        "contents": [
-            {"parts": [{"text": prompt}]}
-        ]
-    }
-    
+    """Get concise disease summary from Gemini 2.0 Flash API"""
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-        if response.status_code == 200:
-            res_json = response.json()
-            summary = res_json['candidates'][0]['content']['parts'][0]['text']
-            return summary
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        
+        # Enhanced prompt for more structured and concise response
+        prompt = f"""Provide a concise summary (2-3 sentences) about {disease_name} in plants, including:
+        1. Main characteristics
+        2. Common symptoms
+        3. Basic prevention/treatment
+        
+        Keep the response under 100 words and in simple language."""
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'X-goog-api-key': GEMINI_API_KEY
+        }
+        data = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.7,
+                "topK": 40,
+                "topP": 0.95,
+                "maxOutputTokens": 200,
+            }
+        }
+        
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        
+        result = response.json()
+        if 'candidates' in result and len(result['candidates']) > 0:
+            return result['candidates'][0]['content']['parts'][0]['text']
         else:
-            return f"⚠️ Disease detected: {disease_name.replace('_', ' ').title()}. Please consult agricultural experts for proper diagnosis and treatment."
+            return f"Information about {disease_name} is not available at the moment."
     except Exception as e:
-        return f"⚠️ Disease detected: {disease_name.replace('_', ' ').title()}. Please consult agricultural experts for proper diagnosis and treatment."
+        st.error(f"Error getting Gemini response: {str(e)}")
+        return f"Could not retrieve information about {disease_name}. Please try again later."
+
+def get_gemini_response(question, context):
+    """Get response from Gemini 2.0 Flash API for user questions"""
+    try:
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        
+        prompt = f"""You are a helpful plant disease assistant. 
+        Context: {context}
+        
+        Question: {question}
+        
+        Please provide a clear, concise, and helpful answer based on the context above. 
+        Focus on practical advice for farmers and gardeners.
+        If the question is not related to plant diseases, politely redirect to plant health topics.
+        Keep the response under 150 words."""
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'X-goog-api-key': GEMINI_API_KEY
+        }
+        data = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.7,
+                "topK": 40,
+                "topP": 0.95,
+                "maxOutputTokens": 300,
+            }
+        }
+        
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        
+        result = response.json()
+        if 'candidates' in result and len(result['candidates']) > 0:
+            return result['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return "I'm sorry, I couldn't generate a response. Please try again."
+    except Exception as e:
+        st.error(f"Error getting Gemini response: {str(e)}")
+        return "I'm having trouble connecting to the AI service. Please try again later."
 
 # ----------------------------
 # Enhanced Translation and Voice
@@ -274,6 +360,7 @@ def generate_voice(text, lang_code):
         
         # Clean text for TTS
         clean_text = text.replace('*', '').replace('#', '').replace('✅', '').replace('⚠️', '')
+        clean_text = clean_text.replace('🌿', '').replace('🔍', '').replace('💡', '')
         
         tts = gTTS(text=clean_text, lang=lang_code, slow=False)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
@@ -282,38 +369,246 @@ def generate_voice(text, lang_code):
     except gTTSError as e:
         st.error(f"Voice generation failed: {str(e)}")
         return None
+    except Exception as e:
+        st.error(f"Unexpected error in voice generation: {str(e)}")
+        return None
 
 def get_audio_player(audio_path):
     """Create audio player HTML"""
     if not audio_path or not os.path.exists(audio_path):
         return ""
     
-    with open(audio_path, "rb") as audio_file:
-        audio_bytes = audio_file.read()
-    
-    b64 = base64.b64encode(audio_bytes).decode()
-    audio_html = f"""
-    <div class="voice-controls">
-        <h4>🔊 Voice Summary</h4>
-        <audio controls style="width: 100%;">
-            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-            Your browser does not support the audio element.
-        </audio>
-    </div>
-    """
-    return audio_html
+    try:
+        with open(audio_path, "rb") as audio_file:
+            audio_bytes = audio_file.read()
+        
+        b64 = base64.b64encode(audio_bytes).decode()
+        audio_html = f"""
+        <div class="voice-controls">
+            <audio controls style="width: 100%;" autoplay>
+                <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+                Your browser does not support the audio element.
+            </audio>
+        </div>
+        """
+        return audio_html
+    except Exception as e:
+        st.error(f"Error creating audio player: {str(e)}")
+        return ""
 
 # ----------------------------
-# Main UI
+# Speech Recognition Functions
+# ----------------------------
+def record_audio(duration=5):
+    """Record audio from microphone and return the audio data"""
+    try:
+        p = pyaudio.PyAudio()
+        stream = p.open(format=pyaudio.paInt16,
+                       channels=1,
+                       rate=44100,
+                       input=True,
+                       frames_per_buffer=1024)
+        
+        frames = []
+        
+        # Record for specified duration
+        for _ in range(0, int(44100 / 1024 * duration)):
+            data = stream.read(1024, exception_on_overflow=False)
+            frames.append(data)
+        
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        
+        # Save to a BytesIO object
+        audio_data = BytesIO()
+        wf = wave.open(audio_data, 'wb')
+        wf.setnchannels(1)
+        wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))
+        wf.setframerate(44100)
+        wf.writeframes(b''.join(frames))
+        wf.close()
+        
+        audio_data.seek(0)
+        return audio_data
+    except Exception as e:
+        st.error(f"Error recording audio: {str(e)}")
+        return None
+
+def transcribe_audio(audio_data, language="en"):
+    """Transcribe audio to text"""
+    try:
+        if not audio_data:
+            return ""
+            
+        with sr.AudioFile(audio_data) as source:
+            # Adjust for ambient noise
+            r.adjust_for_ambient_noise(source)
+            audio = r.record(source)
+        
+        # Map language codes to recognizer's language codes
+        lang_map = {
+            "en": "en-US",
+            "hi": "hi-IN",
+            "te": "te-IN",
+            "ta": "ta-IN"
+        }
+        
+        text = r.recognize_google(audio, language=lang_map.get(language, "en-US"))
+        return text
+    except sr.UnknownValueError:
+        return ""
+    except sr.RequestError as e:
+        st.error(f"Error with speech recognition service: {str(e)}")
+        return ""
+    except Exception as e:
+        st.error(f"Error in speech recognition: {str(e)}")
+        return ""
+
+# ----------------------------
+# Speech-to-Speech Handler
+# ----------------------------
+def handle_speech_to_speech(current_disease, selected_language, lang_code):
+    """Handle the complete speech-to-speech interaction"""
+    st.markdown('<div class="speech-section">', unsafe_allow_html=True)
+    st.markdown("### 🎤 Speech-to-Speech Q&A")
+    st.info("Ask questions about the diagnosed disease using your voice and get spoken responses!")
+    
+    # Instructions
+    st.markdown("""
+    **How to use:**
+    1. Click the 'Start Voice Question' button
+    2. Speak your question clearly (you have 5 seconds)
+    3. Wait for the AI to process and respond
+    4. Listen to the spoken answer
+    """)
+    
+    # Initialize speech session state
+    if 'speech_active' not in st.session_state:
+        st.session_state.speech_active = False
+    if 'processing_speech' not in st.session_state:
+        st.session_state.processing_speech = False
+    
+    # Voice recording button
+    voice_question_btn = st.button("🎤 Start Voice Question", use_container_width=True, type="primary", key="voice_question_btn")
+    
+    if voice_question_btn and not st.session_state.processing_speech:
+        st.session_state.processing_speech = True
+        st.session_state.speech_active = True
+        
+        # Recording phase
+        recording_placeholder = st.empty()
+        recording_placeholder.markdown(
+            '<div class="recording-indicator">🔴 Recording... Speak now!</div>', 
+            unsafe_allow_html=True
+        )
+        
+        # Record audio
+        audio_data = record_audio(duration=5)
+        recording_placeholder.empty()
+        
+        if audio_data:
+            # Transcription phase
+            with st.spinner("🔍 Understanding your question..."):
+                question = transcribe_audio(audio_data, lang_code)
+            
+            if question:
+                # Display transcribed question
+                st.markdown(f'<div class="conversation-bubble user-bubble"><strong>🎤 You asked:</strong> {question}</div>', unsafe_allow_html=True)
+                
+                # Get AI response
+                context = f"""
+                Plant: {current_disease['crop_name']}
+                Disease: {current_disease['disease_name']}
+                Status: {current_disease['status']}
+                Summary: {current_disease['summary']}
+                Confidence: {current_disease['confidence']}%
+                """
+                
+                with st.spinner("🤖 Generating response..."):
+                    response = get_gemini_response(question, context)
+                
+                # Translate response if needed
+                if selected_language != "English":
+                    with st.spinner(f"🌍 Translating to {selected_language}..."):
+                        translated_response = translate_text(response, lang_code)
+                else:
+                    translated_response = response
+                
+                # Display AI response
+                st.markdown(f'<div class="conversation-bubble ai-bubble"><strong>🤖 AI Response:</strong> {translated_response}</div>', unsafe_allow_html=True)
+                
+                # Generate and play voice response
+                with st.spinner("🔊 Converting to speech..."):
+                    voice_path = generate_voice(translated_response, lang_code)
+                
+                if voice_path:
+                    st.success("🔊 Playing AI response...")
+                    audio_html = get_audio_player(voice_path)
+                    st.markdown(audio_html, unsafe_allow_html=True)
+                    
+                    # Cleanup
+                    try:
+                        os.remove(voice_path)
+                    except:
+                        pass
+                else:
+                    st.error("❌ Could not generate voice response")
+                
+                # Add to conversation history
+                if 'conversation_history' not in st.session_state:
+                    st.session_state.conversation_history = []
+                
+                st.session_state.conversation_history.append({
+                    'question': question,
+                    'response': translated_response,
+                    'timestamp': time.time()
+                })
+                
+            else:
+                st.error("❌ Could not understand your question. Please try again with clearer speech.")
+        else:
+            st.error("❌ Failed to record audio. Please check your microphone.")
+        
+        # Reset processing state
+        st.session_state.processing_speech = False
+    
+    # Show conversation history
+    if 'conversation_history' in st.session_state and st.session_state.conversation_history:
+        st.markdown("### 📝 Conversation History")
+        for i, conv in enumerate(st.session_state.conversation_history[-3:]):  # Show last 3 conversations
+            st.markdown(f"""
+            <div class="conversation-bubble">
+                <strong>Q{i+1}:</strong> {conv['question']}<br>
+                <strong>A{i+1}:</strong> {conv['response']}
+            </div>
+            """, unsafe_allow_html=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ----------------------------
+# Main Application
 # ----------------------------
 def main():
-    # Initialize session state
+    # Initialize session states
     if 'analysis_complete' not in st.session_state:
         st.session_state.analysis_complete = False
+    if 'current_disease' not in st.session_state:
+        st.session_state.current_disease = None
+    if 'conversation_history' not in st.session_state:
+        st.session_state.conversation_history = []
+    if 'voice_generated' not in st.session_state:
+        st.session_state.voice_generated = False
+    if 'auto_play_voice' not in st.session_state:
+        st.session_state.auto_play_voice = False
+    if 'summary_generated' not in st.session_state:
+        st.session_state.summary_generated = False
+    if 'translated_summary' not in st.session_state:
+        st.session_state.translated_summary = ""
     
     # Header
     st.markdown('<h1 class="main-header">🌿 AI Plant Disease Diagnosis</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="subtitle">Upload a leaf image to get instant disease diagnosis with multilingual voice support</p>', unsafe_allow_html=True)
+    st.markdown('<p class="subtitle">Upload a leaf image to get instant disease diagnosis with speech-to-speech support</p>', unsafe_allow_html=True)
     
     # Sidebar
     with st.sidebar:
@@ -329,20 +624,38 @@ def main():
         selected_lang = st.selectbox(
             "Select Language", 
             list(language_map.keys()),
-            help="Choose your preferred language for results and voice"
+            help="Choose your preferred language for results and voice",
+            key="language_selector"
         )
+        
+        # Check if language changed and reset voice state
+        if 'previous_language' not in st.session_state:
+            st.session_state.previous_language = selected_lang
+        
+        if selected_lang != st.session_state.previous_language:
+            st.session_state.voice_generated = False
+            st.session_state.previous_language = selected_lang
+            # Re-translate summary if analysis is complete
+            if st.session_state.analysis_complete and st.session_state.current_disease:
+                if selected_lang != "English":
+                    st.session_state.translated_summary = translate_text(
+                        st.session_state.current_disease['summary'], 
+                        language_map[selected_lang]
+                    )
+                else:
+                    st.session_state.translated_summary = st.session_state.current_disease['summary']
         
         st.markdown("---")
         
-        # Enhanced features with deep_translator
+        # Enhanced features
         st.header("✨ Features")
         st.markdown("""
         - 🤖 **AI-Powered** Swin Transformer
-        - 🌐 **Multilingual** Support (deep_translator)
+        - 🌐 **Multilingual** Support
+        - 🎤 **Speech-to-Speech** Interaction
         - 🔊 **Voice** Summaries
         - 📱 **Mobile** Friendly
         - ⚡ **Real-time** Analysis
-        - ☁️ **Cloud** Optimized
         """)
         
         st.markdown("---")
@@ -354,6 +667,13 @@ def main():
         - 🥔 **Potato**
         - 🍅 **Tomato**
         """)
+        
+        st.markdown("---")
+        
+        # Clear conversation history
+        if st.button("🗑️ Clear Chat History", key="clear_history_btn"):
+            st.session_state.conversation_history = []
+            st.rerun()
     
     # Main content area
     col1, col2 = st.columns([1, 1])
@@ -383,113 +703,164 @@ def main():
             )
             
             if analyze_button:
-                # Reset voice state for new analysis
+                # Reset states for new analysis
                 st.session_state.voice_generated = False
                 st.session_state.analysis_complete = False
+                st.session_state.conversation_history = []
+                st.session_state.summary_generated = False
+                st.session_state.translated_summary = ""
                 
-                # Load model with progress
+                # Load model
                 with st.spinner("🤖 Loading AI model..."):
                     model = load_model()
                 
-                # Prediction with progress
+                # Prediction
                 loading_placeholder = show_loading_spinner("🔬 Analyzing image...")
-                time.sleep(1)  # Simulate processing time
+                time.sleep(1)
                 
                 label, confidence = predict(model, image)
                 loading_placeholder.empty()
                 
-                # Mark analysis as complete
-                st.session_state.analysis_complete = True
-                
-                # Results
-                st.markdown('<div class="result-card">', unsafe_allow_html=True)
-                
-                # Display prediction with better formatting
+                # Process results
                 crop_name = label.split('___')[0].replace('_', ' ').title()
                 disease_name = label.split('___')[1].replace('_', ' ').title()
+                is_healthy = "healthy" in disease_name.lower()
                 
-                st.markdown("### 🔍 Diagnosis Result")
+                # Store current disease info
+                st.session_state.current_disease = {
+                    'crop_name': crop_name,
+                    'disease_name': disease_name,
+                    'status': 'Healthy' if is_healthy else 'Diseased',
+                    'confidence': round(confidence * 100, 1),
+                    'full_label': label,
+                    'summary': ''
+                }
                 
-                if "healthy" in disease_name.lower():
-                    st.success(f"✅ **Healthy {crop_name}** - No disease detected!")
-                    st.markdown(f'<div style="text-align: center; margin: 1rem 0;"><span class="healthy-tag">✅ Healthy {crop_name}</span></div>', unsafe_allow_html=True)
-                else:
-                    st.error(f"⚠️ **{disease_name}** detected in {crop_name}")
-                    st.markdown(f'<div style="text-align: center; margin: 1rem 0;"><span class="disease-tag">⚠️ {disease_name}</span></div>', unsafe_allow_html=True)
-                
-                # Confidence bar
-                st.markdown(f"**Confidence: {confidence*100:.1f}%**")
-                confidence_html = f"""
-                <div class="confidence-bar">
-                    <div class="confidence-fill" style="width: {confidence*100}%;"></div>
-                </div>
-                """
-                st.markdown(confidence_html, unsafe_allow_html=True)
-                
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Get summary
+                # Get and display summary
                 with st.spinner("🧠 Generating summary..."):
                     gemini_summary = get_gemini_summary(label)
+                    st.session_state.current_disease['summary'] = gemini_summary
                 
                 # Translate if needed
                 if selected_lang != "English":
                     with st.spinner(f"🌍 Translating to {selected_lang}..."):
-                        translated = translate_text(gemini_summary, language_map[selected_lang])
+                        translated_summary = translate_text(gemini_summary, language_map[selected_lang])
                 else:
-                    translated = gemini_summary
+                    translated_summary = gemini_summary
                 
-                # Display summary
+                # Store translated summary
+                st.session_state.translated_summary = translated_summary
+                st.session_state.summary_generated = True
+                
+                # Mark analysis as complete
+                st.session_state.analysis_complete = True
+    
+    # Display results if analysis is complete (outside the button click)
+    if st.session_state.analysis_complete and st.session_state.current_disease:
+        with col2:
+            # Display results
+            st.markdown('<div class="result-card">', unsafe_allow_html=True)
+            st.markdown("### 🔍 Diagnosis Result")
+            
+            crop_name = st.session_state.current_disease['crop_name']
+            disease_name = st.session_state.current_disease['disease_name']
+            confidence = st.session_state.current_disease['confidence']
+            is_healthy = st.session_state.current_disease['status'] == 'Healthy'
+            
+            if is_healthy:
+                st.success(f"✅ **Healthy {crop_name}** - No disease detected!")
+                st.markdown(f'<div style="text-align: center; margin: 1rem 0;"><span class="healthy-tag">✅ Healthy {crop_name}</span></div>', unsafe_allow_html=True)
+            else:
+                st.error(f"⚠️ **{disease_name}** detected in {crop_name}")
+                st.markdown(f'<div style="text-align: center; margin: 1rem 0;"><span class="disease-tag">⚠️ {disease_name}</span></div>', unsafe_allow_html=True)
+            
+            # Confidence display
+            st.markdown(f"**Confidence: {confidence}%**")
+            confidence_html = f"""
+            <div class="confidence-bar">
+                <div class="confidence-fill" style="width: {confidence}%;"></div>
+            </div>
+            """
+            st.markdown(confidence_html, unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Display summary
+            if st.session_state.summary_generated:
                 st.markdown("### 📋 Summary")
-                st.info(translated)
+                st.info(st.session_state.translated_summary)
                 
-                # Voice controls with better state management
-                st.markdown("### 🔊 Voice Summary")
+                # Voice-based Q&A Section
+                st.markdown("---")
+                st.markdown("### 🎤 Ask Questions About This Disease")
+                st.info("Click the button below to ask a question about the disease using your voice.")
                 
-                # Initialize session state for voice controls
-                if 'auto_play_voice' not in st.session_state:
-                    st.session_state.auto_play_voice = True
-                if 'voice_generated' not in st.session_state:
-                    st.session_state.voice_generated = False
+                # Initialize question state
+                if 'question_asked' not in st.session_state:
+                    st.session_state.question_asked = False
                 
-                col_voice1, col_voice2 = st.columns([1, 1])
-                
-                with col_voice1:
-                    generate_voice_btn = st.button("🎵 Generate Voice", use_container_width=True)
-                
-                with col_voice2:
-                    # Use session state for auto-play to prevent summary closure
-                    auto_play = st.checkbox(
-                        "🔄 Auto-play voice", 
-                        value=st.session_state.auto_play_voice,
-                        key="auto_play_checkbox"
-                    )
-                    st.session_state.auto_play_voice = auto_play
-                
-                # Generate voice based on button click or auto-play
-                should_generate_voice = generate_voice_btn or (auto_play and not st.session_state.voice_generated)
-                
-                if should_generate_voice:
-                    with st.spinner("🎙️ Generating voice..."):
-                        voice_path = generate_voice(translated, language_map[selected_lang])
-                    
-                    if voice_path:
-                        audio_html = get_audio_player(voice_path)
-                        st.markdown(audio_html, unsafe_allow_html=True)
-                        st.session_state.voice_generated = True
+                # Create a form for the question
+                with st.form("question_form"):
+                    if st.form_submit_button("🎤 Ask a Question (Hold to Speak)", use_container_width=True, type="secondary"):
+                        st.session_state.question_asked = True
                         
-                        # Cleanup
-                        if os.path.exists(voice_path):
-                            os.remove(voice_path)
-                    else:
-                        st.warning("🔇 Voice generation failed. Please try again.")
-                elif st.session_state.voice_generated and not auto_play:
-                    st.info("🔇 Auto-play disabled. Click 'Generate Voice' to play again.")
+                if st.session_state.question_asked:
+                    with st.spinner("🎙️ Listening... Speak now!"):
+                        try:
+                            # Record audio
+                            audio_data = record_audio()
+                            
+                            # Transcribe audio
+                            question = transcribe_audio(audio_data, language_map[selected_lang])
+                            
+                            if question:
+                                st.success(f"🎤 You asked: {question}")
+                                
+                                # Get response from Gemini
+                                context = f"""
+                                Crop: {crop_name}
+                                Disease: {disease_name}
+                                Summary: {st.session_state.translated_summary}
+                                """
+                                
+                                with st.spinner("🤔 Thinking..."):
+                                    response = get_gemini_response(question, context, language_map[selected_lang])
+                                    
+                                    # Display response
+                                    st.markdown("### 💡 Response")
+                                    st.info(response)
+                                    
+                                    # Convert response to speech
+                                    with st.spinner("🔊 Converting response to speech..."):
+                                        response_voice_path = generate_voice(response, language_map[selected_lang])
+                                        if response_voice_path:
+                                            response_audio = get_audio_player(response_voice_path)
+                                            st.markdown(response_audio, unsafe_allow_html=True)
+                                            
+                                            # Cleanup
+                                            if os.path.exists(response_voice_path):
+                                                os.remove(response_voice_path)
+                            else:
+                                st.warning("Could not understand your question. Please try again.")
+                        except Exception as e:
+                            st.error(f"An error occurred: {str(e)}")
+                            st.error("Please try again or refresh the page.")
+                        
+                        # Reset the question state
+                        st.session_state.question_asked = False
+    
+    # Speech-to-Speech Section (Full Width)
+    if st.session_state.analysis_complete and st.session_state.current_disease:
+        st.markdown("---")
+        handle_speech_to_speech(
+            st.session_state.current_disease, 
+            selected_lang, 
+            language_map[selected_lang]
+        )
     
     # Footer
     st.markdown("---")
     st.markdown(
-        '<p style="text-align: center; color: #666;">Built with ❤️ using Swin Transformer + Gemini AI + Google TTS + deep_translator</p>',
+        '<p style="text-align: center; color: #666;">Built with ❤️ using Swin Transformer + Gemini AI + Speech Recognition + Google TTS</p>',
         unsafe_allow_html=True
     )
 
